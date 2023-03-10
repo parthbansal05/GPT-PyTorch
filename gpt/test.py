@@ -34,6 +34,22 @@ def scaled_dot_product_attention(q, k, v, mask=None):
 
     return output
 
+class PositionalEncoding(T.nn.Module):
+  def __init__(self, d_model, dropout=0.1, max_len=5000):
+    super(PositionalEncoding, self).__init__()
+    self.dropout = T.nn.Dropout(p=dropout)
+    pe = T.zeros(max_len, d_model)
+    position = T.arange(0, max_len, dtype=T.float).unsqueeze(1)
+    div_term = T.exp(T.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+    pe[:, 0::2] = T.sin(position * div_term)
+    pe[:, 1::2] = T.cos(position * div_term)
+    pe = pe.unsqueeze(0).transpose(0, 1)
+    self.register_buffer('pe', pe)
+
+  def forward(self, x):
+    x = x + self.pe[:x.size(0), :]
+    return self.dropout(x)
+
 # Define a multi-head self-attention layer
 class MultiHeadSelfAttention(nn.Module):
     
