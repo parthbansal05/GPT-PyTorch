@@ -8,6 +8,10 @@ n_heads = 8 # number of attention heads
 d_ff = 2048 # hidden size of the feed-forward layer
 dropout = 0.1 # dropout rate
 
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+
+
 # Define a scaled dot-product attention function
 def scaled_dot_product_attention(q, k, v, mask=None):
     # q: query tensor of shape (batch_size, n_heads, seq_len, d_head)
@@ -215,9 +219,9 @@ class PositionalEncoding(nn.Module):
         super(PositionalEncoding, self).__init__()
         self.dropout = nn.Dropout(p=dropout)
 
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(max_len, d_model,device=device)
+        position = torch.arange(0, max_len, dtype=torch.float, device=device).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2, device=device).float() * (-math.log(10000.0) / d_model))
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
         pe = pe.unsqueeze(0).transpose(0, 1)
@@ -234,8 +238,8 @@ class Transformer(nn.Module):
     def __init__(self,src_vocab,trg_vocab,d_model,n_heads,d_ff,N):
         super().__init__()
 
-        self.encoder = Encoder(src_vocab,d_model,n_heads,d_ff,N)
-        self.decoder = Decoder(trg_vocab,d_model,n_heads,d_ff,N)
+        # self.encoder = Encoder(d_model,n_heads,d_ff,N)
+        self.decoder = Decoder(d_model,n_heads,d_ff,N)
         self.src_embed = nn.Embedding(src_vocab,d_model)
         self.trg_embed = nn.Embedding(trg_vocab,d_model)
         self.pos_enc = PositionalEncoding(d_model)
@@ -251,7 +255,7 @@ class Transformer(nn.Module):
         y= self.pos_enc(y) 
 
         
-        x= self.encoder(x,x_mask) 
+        # x= self.encoder(x,x_mask) 
         y= self.decoder(x,y,x_mask,y_mask) 
 
         
@@ -259,3 +263,75 @@ class Transformer(nn.Module):
 
         return out
     
+
+# ===================================================================================================
+def get_batch(split):
+    # generate a small batch of data of inputs x and targets y
+    data = train_data if split == 'train' else val_data
+    ix = torch.randint(len(data) - 256, (64,), device=device)
+    x = torch.stack([data[i:i+256] for i in ix])
+    y = torch.stack([data[i+1:i+256+1] for i in ix])
+    x, y = x.to(device), y.to(device)
+    return x, y
+
+@torch.no_grad()
+def estimate_loss():
+    out = {}
+    model.eval()
+    for split in ['train', 'val']:
+        losses = torch.zeros(100)
+        for k in range(100):
+            X, Y = get_batch(split)
+            logits, loss = model(X, Y)
+            losses[k] = loss.item()
+        out[split] = losses.mean()
+    model.train()
+    return out
+
+with open('input.txt', 'r', encoding='utf-8') as f:
+    text = f.read()
+
+# here are all the unique characters that occur in this text
+chars = sorted(list(set(text)))
+src_vocab = len(chars)    
+trg_vocab= src_vocab
+stoi = { ch:i for i,ch in enumerate(chars) }
+itos = { i:ch for i,ch in enumerate(chars) }
+encode = lambda s: [stoi[c] for c in s] # encoder: take a string, output a list of integers
+decode = lambda l: ''.join([itos[i] for i in l]) # decoder: take a list of integers, output a string
+
+# Train and test splits
+data = torch.tensor(encode(text), dtype=torch.long, device=device)
+n = int(0.9*len(data)) # first 90% will be train, rest val
+train_data = data[:n]
+val_data = data[n:]
+
+
+
+N=6
+
+model = Transformer(src_vocab,trg_vocab,d_model,n_heads,d_ff,N)
+m= model.to(device)
+print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
+
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+
+for iter in range(2000):
+
+    # every once in a while evaluate the loss on train and val sets
+    if iter % 100 == 0 or iter == 2000 - 1:
+        losses = estimate_loss()
+        print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+
+    # sample a batch of data
+    xb, yb = get_batch('train')
+
+    # evaluate the loss
+    logits, loss = model(xb, yb)
+    optimizer.zero_grad(set_to_none=True)
+    loss.backward()
+    optimizer.step()
+
+# generate from the model
+context = torch.zeros((1, 1), dtype=torch.long, device=device)
+print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
